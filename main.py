@@ -526,8 +526,8 @@ def test(args):
             # Calculate gains (AS - algorithm)
             gain_data_dict[f'{algo}_rmsd_lt_1_valid'] = algo_percent_rmsd_lt_1_valid
             gain_data_dict[f'{algo}_rmsd_lt_2_valid'] = algo_percent_rmsd_lt_2_valid
-            gain_data_dict[f'gain_from_{algo}_rmsd_lt_1_valid'] = algo_percent_rmsd_lt_1_valid - as_percent_rmsd_lt_1_valid_individual
-            gain_data_dict[f'gain_from_{algo}_rmsd_lt_2_valid'] = algo_percent_rmsd_lt_2_valid - as_percent_rmsd_lt_2_valid_individual
+            gain_data_dict[f'gain_from_{algo}_rmsd_lt_1_valid'] = as_percent_rmsd_lt_1_valid_individual - algo_percent_rmsd_lt_1_valid
+            gain_data_dict[f'gain_from_{algo}_rmsd_lt_2_valid'] = as_percent_rmsd_lt_2_valid_individual - algo_percent_rmsd_lt_2_valid
 
     # Export gain metrics to CSV file
     csv_file_path = os.path.join(os.path.dirname(__file__), 'temp.csv')

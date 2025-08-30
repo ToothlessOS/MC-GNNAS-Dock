@@ -34,15 +34,14 @@ class DInterface(pl.LightningDataModule):
 
     def setup(self, stage=None):
         if self.k_folds is not None:
-            print("K-Fold enabled")
-            train_val, self.testset = train_test_split(self.dataset, test_size=self.test_size, random_state=self.seed)
-            
+            print("K-Fold enabled")            
             self.kf = KFold(n_splits=self.k_folds, shuffle=True, random_state=self.seed)
-            self.folds = list(self.kf.split(train_val))
+            self.folds = list(self.kf.split(self.dataset))
             train_idx, val_idx = self.folds[self.current_fold]
             
-            self.trainset = train_val.iloc[train_idx]
-            self.valset = train_val.iloc[val_idx]
+            self.trainset = self.dataset.iloc[train_idx]
+            self.valset = self.dataset.iloc[val_idx]
+            self.testset = self.valset # For simplicity, using valset as testset in K-Fold
         else:
             print("K-Fold disabled")
             train_val, self.testset = train_test_split(self.dataset, test_size=self.test_size, random_state=self.seed)

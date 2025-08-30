@@ -115,6 +115,7 @@ def prepare_data_point(drop_columns:list = []):
     pb_ratios['smina'] = 1
     pb_ratios['qvina'] = 1
 
+    """
        # Scoring function setup (new)
     alpha = 0.5 # Weight for the RMSD score
 
@@ -130,11 +131,24 @@ def prepare_data_point(drop_columns:list = []):
             return score
         else:
             return 0
+    """
+    # Multiplicativve scoring function setup (latest)
+    def pose_score(x, lambda_pb=20):
+        return math.exp(lambda_pb * (x-1)) if x >= 0 else 0
+    
+    def rmsd_score(x, lambda_rmsd=1):
+        if x > 5 or x < 0:
+            return 0
+        score = (11 - math.exp(lambda_rmsd*x))/10
+        if score >= 0:
+            return score
+        else:
+            return 0
         
     # Score computation
     pose_scores = pose.iloc[:, 2:].astype(int)
     rmsd_scores = rmsd.iloc[:, 2:].applymap(rmsd_score)
-    final_df = (1-alpha)*pose_scores + alpha*rmsd_scores
+    final_df = pose_scores * rmsd_scores
     final_df.insert(0, 'protein', protein)
     final_df.insert(1, 'ligand', ligand)
 

@@ -107,9 +107,14 @@ class GCN_GAT_GINE_FIXED_OUT_DIM(torch.nn.Module):
         # Fully connected layers for concatenating outputs
         self.fc1 = Linear(32 + 32 * 8 + 32, 128)  # Adjusted input size to match concatenated size
         self.dropout1 = Dropout(p=0.2)
-        self.fc2 = Linear(128, 64)
-        self.dropout2 = Dropout(p=0.2)
-        self.fc3 = Linear(64, 32)
+        self.res_block10 = ResidualBlock(128, 256, dropout_rate=0.3)
+        self.res_block20 = ResidualBlock(128, 256, dropout_rate=0.3)
+        self.res_block30 = ResidualBlock(128, 256, dropout_rate=0.3)
+        self.res_block11 = ResidualBlock(128, 256, dropout_rate=0.3)
+        self.res_block21 = ResidualBlock(128, 256, dropout_rate=0.3)
+        self.res_block31 = ResidualBlock(128, 256, dropout_rate=0.3)
+        # Dense connection: 128 + 128 + 128 + 128 + 128 + 128 + 128 = 896
+        self.fc2 = Linear(896, 96)  # Updated from 128 to 896
 
     def forward(self, data):
         x, edge_index, edge_w, batch = data.x, data.edge_index, data.edge_attr, data.batch
@@ -143,11 +148,21 @@ class GCN_GAT_GINE_FIXED_OUT_DIM(torch.nn.Module):
         cr = torch.cat((x, y, z), 1)
         cr = F.relu(self.fc1(cr))
         cr = self.dropout1(cr)
-        cr = F.relu(self.fc2(cr))
-        cr = self.dropout2(cr)
-        cr = self.fc3(cr)
-        return cr.view(-1, 32)
-            
+        
+        # Apply residual blocks and collect outputs for dense connections
+        x1 = self.res_block10(cr)
+        x2 = self.res_block11(x1)
+        x3 = self.res_block20(x2)
+        x4 = self.res_block21(x3)
+        x5 = self.res_block30(x4)
+        x6 = self.res_block31(x5)
+        
+        # Dense connection: concatenate all residual block outputs
+        dense_features = torch.cat((cr, x1, x2, x3, x4, x5, x6), dim=1)
+        
+        cr = F.relu(self.fc2(dense_features))
+        return cr.view(-1, 96)
+    
 class GCN_GAT(torch.nn.Module):
     def __init__(self, num_node_features, num_classes):
         super(GCN_GAT, self).__init__()
@@ -449,13 +464,10 @@ class ResidualBlock(nn.Module):
     def forward(self, x):
         residual = x
         
-        # Pre-activation design
-        out = self.relu(x)
-        out = self.dropout(out)
-        out = self.fc1(out)
-        
+        out = self.fc1(x)
         out = self.relu(out)
         out = self.dropout(out)
+        
         out = self.fc2(out)
         
-        return out + residual
+        return self.relu(out + residual)  # Apply activation after residual addition
