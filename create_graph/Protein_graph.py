@@ -17,7 +17,8 @@ from graphein.protein.edges.distance import (
 from torch_geometric.data import Data
 import esm
 from functools import partial
-from multiprocessing import Pool
+from concurrent.futures import ThreadPoolExecutor
+import threading
 import numpy as np
 
 # Configuration for protein graph construction
@@ -35,10 +36,18 @@ config = ProteinGraphConfig(
     ]
 )
 
-# Load the ESM model globally for efficiency
+# Check if CUDA is available and set device
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"Using device: {device}")
+
+# Load the ESM model globally for efficiency and move to GPU
 model, alphabet = esm.pretrained.esm2_t33_650M_UR50D()
+model = model.to(device)
 batch_converter = alphabet.get_batch_converter()
 model.eval()
+
+# Thread lock for GPU access
+model_lock = threading.Lock()
 
 def three_to_one(resname):
     """
@@ -87,11 +96,18 @@ def convert_to_pyg(graph):
     for chain_id, seq in graph.graph["sequences"].items():
         sequences = [(f"chain_{chain_id}", str(seq))]
         _, _, batch_tokens = batch_converter(sequences)
+        
+        # Move tokens to the same device as model
+        batch_tokens = batch_tokens.to(device)
 
-        with torch.no_grad():
-            results = model(batch_tokens, repr_layers=[33], return_contacts=True)
-        per_residue_embeddings = results["representations"][33]
-        node_features.append(per_residue_embeddings)
+        # Use thread lock to ensure thread-safe GPU access
+        with model_lock:
+            with torch.no_grad():
+                results = model(batch_tokens, repr_layers=[33], return_contacts=True)
+            per_residue_embeddings = results["representations"][33]
+            # Move embeddings to CPU to free GPU memory
+            per_residue_embeddings = per_residue_embeddings.cpu()
+            node_features.append(per_residue_embeddings)
 
     node_features = torch.cat(node_features, dim=1).squeeze(0)
 
@@ -133,13 +149,13 @@ def process_single_protein(protein, config, save_dir, path):
     Process a single protein to generate a PyTorch Geometric graph.
     """
     try:
-        path = f'test/{protein}/{protein}_protein_processed.pdb'
-        
+        pdb_path = f'{path}/{protein}/{protein}_protein_processed.pdb'
+
         # Extract sequences for all chains
-        chain_sequences = get_sequences_from_pdb(path)
+        chain_sequences = get_sequences_from_pdb(pdb_path)
 
         # Construct the graph
-        graph = construct_graph(config=config, path=path)
+        graph = construct_graph(config=config, path=pdb_path)
 
         # Attach sequences to the graph metadata
         graph.graph["sequences"] = chain_sequences
@@ -151,9 +167,16 @@ def process_single_protein(protein, config, save_dir, path):
         save_path = os.path.join(save_dir, f"pyg_graph_{protein}.pt")
         torch.save(pyg_graph, save_path)
         print(f"Successfully processed {protein}")
+        
+        # Clear GPU cache periodically to prevent memory accumulation
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     except Exception as e:
         print(f"Failed to process {protein}: {e}")
+        # Clear GPU cache even on error
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 def chunk_list(data, chunk_size):
     """
@@ -164,26 +187,46 @@ def chunk_list(data, chunk_size):
 
 def parallel_process_proteins(proteins, config, save_dir, num_workers=4, chunk_size=100, path=None):
     """
-    Process multiple proteins in parallel.
+    Process multiple proteins in parallel using threading.
     """
     os.makedirs(save_dir, exist_ok=True)
-    protein_chunks = list(chunk_list(proteins, chunk_size))
-
-    with Pool(processes=num_workers) as pool:
-        pool.map(partial(process_proteins_chunk, config=config, save_dir=save_dir, path = path), protein_chunks)
+    
+    # Create a partial function with fixed arguments
+    process_func = partial(process_single_protein, config=config, save_dir=save_dir, path=path)
+    
+    # Use ThreadPoolExecutor instead of multiprocessing
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        # Submit all proteins for processing
+        futures = [executor.submit(process_func, protein) for protein in proteins]
+        
+        # Wait for all tasks to complete and handle any exceptions
+        for i, future in enumerate(futures):
+            try:
+                future.result()
+                if (i + 1) % 10 == 0:  # Progress reporting
+                    print(f"Completed {i + 1}/{len(proteins)} proteins")
+            except Exception as e:
+                print(f"Error processing protein {proteins[i]}: {e}")
 
 def process_proteins_chunk(protein_chunk, config, save_dir, path):
     """
-    Process a chunk of proteins.
+    Process a chunk of proteins (kept for compatibility but not used with threading).
     """
     for protein in protein_chunk:
         process_single_protein(protein, config, save_dir, path)
 
-path = "../dataset/diff_MOAD"
-save_dir = "../protein_g"
-os.makedirs(save_dir, exist_ok=True)
-with open('../chosen_train', 'r') as f:
-    proteins = [line.strip() for line in f]
-# proteins = os.listdir(path)
-parallel_process_proteins(proteins, config, save_dir, num_workers=4, chunk_size=100, path=path)
+if __name__ == "__main__":
+    path = "../dataset/raw_inference"
+    save_dir = "../dataset/protein_g_inference"
+    os.makedirs(save_dir, exist_ok=True)
+    # with open('../chosen_train', 'r') as f:
+        # proteins = [line.strip() for line in f]
+    proteins = os.listdir(path)
+    
+    print(f"Found {len(proteins)} proteins to process")
+    print(f"Using device: {device}")
+    
+    # Use fewer workers for GPU processing to avoid memory issues
+    # Threading with GPU works best with 2-4 threads max
+    parallel_process_proteins(proteins, config, save_dir, num_workers=2, chunk_size=100, path=path)
 

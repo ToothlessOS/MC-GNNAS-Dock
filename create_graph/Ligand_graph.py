@@ -54,17 +54,18 @@ config.dict()
 
 import os
 # Change here for different dataset
-
-path = '../dataset/test'
-proteins = pd.Series(os.listdir(path))
+if __name__ == "__main__":
+    path = '../dataset/test'
+    proteins = pd.Series(os.listdir(path))
 
 # Function to construct graphs
 def construct_ligand_graph(protein_name, path):
     ligand_path = os.path.join(path, protein_name, f'{protein_name}_ligand.sdf')
     return gm.construct_graph(config=config, path=ligand_path)
 
-# Construct graphs for all proteins listed in the DataFrame
-graphs = proteins.apply(lambda p: construct_ligand_graph(p, path))
+if __name__ == "__main__":
+    # Construct graphs for all proteins listed in the DataFrame
+    graphs = proteins.apply(lambda p: construct_ligand_graph(p, path))
 
 
 
@@ -142,16 +143,18 @@ def convert_to_pyg(graph):
 
     # Create a PyTorch Geometric Data object
     return Data(x=node_features, edge_index=edge_index, edge_attr=edge_attr)
-# Convert all graphs
-pyg_graphs = [convert_to_pyg(g) for g in graphs]
-# pyg_graphs = convert_to_pyg(graph)
-# Assuming pyg_graphs is a list containing your graph data objects
-proteins = proteins.to_list()
-out_dir = '../ligand_g'
-os.makedirs(out_dir, exist_ok=True)
-for idx, pyg_graph in enumerate(pyg_graphs):
-    protein_name = proteins[idx]
-    file_name = f"{out_dir}/pyg_graph_{protein_name}.pt"
+
+if __name__ == "__main__":
+    # Convert all graphs
+    pyg_graphs = [convert_to_pyg(g) for g in graphs]
+    # pyg_graphs = convert_to_pyg(graph)
+    # Assuming pyg_graphs is a list containing your graph data objects
+    proteins = proteins.to_list()
+    out_dir = '../ligand_graphs'
+    os.makedirs(out_dir, exist_ok=True)
+    for idx, pyg_graph in enumerate(pyg_graphs):
+        protein_name = proteins[idx]
+        file_name = f"{out_dir}/pyg_graph_{protein_name}.pt"
     torch.save(pyg_graph, file_name)
     print(f'{protein_name} saved')
 
