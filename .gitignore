@@ -40,3 +40,5 @@ temp_*.csv
 
 dataset_backup.py
 dataset_fixed.py
+inference_results.csv
+notebook_inference_results.csv
