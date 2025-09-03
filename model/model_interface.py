@@ -284,7 +284,20 @@ class MInterface(pl.LightningModule):
             self.test_step_outputs.append(output_dict)
     
         return output_dict
-    
+
+    def predict_step(self, batch, batch_idx):
+        """Prediction step for inference."""
+        ligand_data, protein_data = batch
+        out = self(ligand_data, protein_data)
+        
+        # Return predictions with names
+        output_dict = {
+            'out': out.detach().cpu().numpy(),
+            'names': ligand_data.names if hasattr(ligand_data, 'names') else None,
+        }
+        
+        return output_dict
+
     def on_test_epoch_end(self, outputs=None):
         # Access the outputs through the dataloader_outputs attribute
         if not hasattr(self, "test_step_outputs") or not self.test_step_outputs:

@@ -32,6 +32,7 @@ from pytorch_lightning.loggers import TensorBoardLogger
 
 from model import MInterface
 from data import DInterface
+from data.data_interface import DInferenceInterface
 from utils import load_model_path_by_args, plot_rmsd_metrics
 
 from data.dataset import prepare_data_binary, prepare_data_point, prepare_data_pose, prepare_data_rmsd
@@ -77,6 +78,157 @@ def load_callbacks(args):
     ))
 
     return callbacks
+
+def inference(args):
+    """Run inference on custom data using a trained model."""
+    pl.seed_everything(args.seed)
+    
+    # Validate required arguments
+    if not args.ckpt_path:
+        raise ValueError("Checkpoint path is required for inference. Use --ckpt_path to specify.")
+    if not os.path.exists(args.ckpt_path):
+        raise FileNotFoundError(f"Checkpoint file not found: {args.ckpt_path}")
+    
+    # Set default directories if not provided
+    protein_graph_dir = getattr(args, 'protein_graph_dir', 'dataset/protein_g_inference')
+    ligand_graph_dir = getattr(args, 'ligand_graph_dir', 'dataset/ligand_g_inference')
+    
+    print(f"Loading inference data from:")
+    print(f"  Protein graphs: {protein_graph_dir}")
+    print(f"  Ligand graphs: {ligand_graph_dir}")
+    
+    # Create inference data module
+    data_module = DInferenceInterface(
+        protein_graph_dir=protein_graph_dir,
+        ligand_graph_dir=ligand_graph_dir,
+        num_workers=args.num_workers,
+        batch_size=args.batch_size
+    )
+    
+    # Load the trained model
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    model = MInterface.load_from_checkpoint(args.ckpt_path, map_location=device)
+    model = model.eval()
+    
+    print(f"Loaded model from: {args.ckpt_path}")
+    print(f"Model criteria: {model.criteria}")
+    print(f"Number of classes: {model.hparams.num_classes}")
+    
+    # Create trainer for inference
+    trainer = Trainer(
+        accelerator="cuda" if torch.cuda.is_available() else "cpu",
+        devices=1,
+        logger=False,
+        enable_checkpointing=False
+    )
+    
+    # Run inference
+    print("Running inference...")
+    predictions = trainer.predict(model, datamodule=data_module)
+    
+    # Process predictions
+    all_predictions = []
+    all_names = []
+    
+    for batch_pred in predictions:
+        if isinstance(batch_pred, dict):
+            # Handle case where predictions are returned as dict
+            pred_out = batch_pred.get('out', batch_pred.get('predictions', None))
+            pred_names = batch_pred.get('names', None)
+        else:
+            # Handle case where predictions are returned directly
+            pred_out = batch_pred
+            pred_names = None
+            
+        if pred_out is not None:
+            all_predictions.append(pred_out)
+        if pred_names is not None:
+            all_names.extend(pred_names)
+    
+    # If we don't have names from predictions, get them from data module
+    if not all_names:
+        all_names = data_module.get_names_list()
+    
+    # Concatenate all predictions
+    if all_predictions:
+        predictions_array = np.concatenate(all_predictions, axis=0)
+    else:
+        raise ValueError("No predictions were generated.")
+    
+    print(f"Generated predictions for {len(all_names)} protein-ligand pairs.")
+    print(f"Predictions array shape: {predictions_array.shape}")
+    print(f"Model criteria: {model.criteria}")
+    print(f"Number of classes: {args.num_classes}")
+    
+    # Reshape predictions if needed
+    if len(predictions_array.shape) == 1:
+        # If predictions are 1D, reshape to 2D
+        predictions_array = predictions_array.reshape(-1, args.num_classes)
+    
+    print(f"Reshaped predictions array shape: {predictions_array.shape}")
+    
+    # Create results DataFrame
+    algorithm_columns = ['surf', 'uni', 'gnina', 'smina', 'qvina', 'diff', 'diffL', 'karma']
+    
+    # Handle different numbers of algorithms based on dropped columns
+    available_algorithms = algorithm_columns[:predictions_array.shape[1]]
+    
+    # Create predictions DataFrame
+    if model.criteria == 'binary':
+        # For binary models, apply sigmoid to get probabilities
+        predictions_probs = torch.sigmoid(torch.tensor(predictions_array)).numpy()
+        predictions_df = pd.DataFrame(predictions_probs, columns=available_algorithms)
+    else:
+        # For point/rank models, use raw scores
+        predictions_df = pd.DataFrame(predictions_array, columns=available_algorithms)
+    
+    # Add protein-ligand pair names
+    protein_names = [name.split('_')[0] for name in all_names]
+    ligand_names = ['_'.join(name.split('_')[1:]) for name in all_names]
+    
+    results_df = pd.DataFrame({
+        'protein': protein_names,
+        'ligand': ligand_names,
+        'full_name': all_names
+    })
+    
+    # Add prediction scores
+    for col in available_algorithms:
+        results_df[f'{col}_score'] = predictions_df[col].values
+    
+    # Determine selected algorithm (highest score/probability)
+    if model.criteria == 'binary':
+        # For binary: select algorithm with highest probability
+        results_df['selected_algorithm'] = predictions_df.idxmax(axis=1)
+        results_df['confidence'] = predictions_df.max(axis=1)
+    else:
+        # For point/rank: select algorithm with highest score
+        results_df['selected_algorithm'] = predictions_df.idxmax(axis=1)
+        results_df['confidence'] = predictions_df.max(axis=1)
+    
+    # Add prediction ranking
+    for i, algorithm in enumerate(available_algorithms):
+        rank_col = f'{algorithm}_rank'
+        results_df[rank_col] = predictions_df.rank(axis=1, method='min', ascending=False)[algorithm].astype(int)
+    
+    # Set output path
+    output_path = getattr(args, 'inference_output', 'inference_results.csv')
+    
+    # Save results
+    results_df.to_csv(output_path, index=False)
+    print(f"Inference results saved to: {output_path}")
+    
+    # Print summary
+    print("\n=== Inference Summary ===")
+    print(f"Total protein-ligand pairs: {len(results_df)}")
+    print(f"Model type: {model.criteria}")
+    print(f"Available algorithms: {', '.join(available_algorithms)}")
+    print("\nAlgorithm selection distribution:")
+    print(results_df['selected_algorithm'].value_counts())
+    print(f"\nMean confidence: {results_df['confidence'].mean():.4f}")
+    print(f"Results saved to: {output_path}")
+    
+    return results_df
 
 # Main function for training 
 def main(args):
@@ -587,6 +739,18 @@ def test(args):
 
 if __name__ == '__main__':
     parser = ArgumentParser()
+    
+    # Mode selection
+    parser.add_argument('--inference', action='store_true', help='Run in inference mode')
+    
+    # Inference specific arguments
+    parser.add_argument('--protein_graph_dir', default='dataset/protein_g_inference', type=str,
+                       help='Directory containing protein graph files (.pt)')
+    parser.add_argument('--ligand_graph_dir', default='dataset/ligand_g_inference', type=str,
+                       help='Directory containing ligand graph files (.pt)')
+    parser.add_argument('--inference_output', default='inference_results.csv', type=str,
+                       help='Output CSV file path for inference results')
+    
     # Basic Training Control
     parser.add_argument('--batch_size', default=8, type=int)
     parser.add_argument('--num_workers', default=4, type=int)
@@ -652,7 +816,9 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    if args.test:
+    if args.inference:
+        inference(args)
+    elif args.test:
         test(args)
     else:
         main(args)

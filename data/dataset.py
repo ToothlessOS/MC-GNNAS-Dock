@@ -1,4 +1,5 @@
 import torch
+import os
 from torch_geometric.data import Data, Dataset
 from torch_geometric.loader import DataLoader
 import pandas as pd
@@ -59,6 +60,74 @@ class CombinedDataset(Dataset):
         assert smiles_data.names == graph_data.names, "names do not match."
         
         return smiles_data, graph_data
+
+# Inference Dataset Classes for custom data
+class InferenceLigandDataset(Dataset):
+    def __init__(self, names_list, ligand_graph_dir):
+        self.names_list = names_list
+        self.ligand_graph_dir = ligand_graph_dir
+                    
+    def __len__(self):
+        return len(self.names_list)
+    
+    def __getitem__(self, idx):
+        name = self.names_list[idx]
+        # Load ligand graph
+        ligand_graph_path = f'{self.ligand_graph_dir}/pyg_graph_{name}.pt'
+        if not os.path.exists(ligand_graph_path):
+            raise FileNotFoundError(f"Ligand graph file not found: {ligand_graph_path}")
+        
+        # Load the graph data directly (inference files are stored as PyG Data objects)
+        graph_data = torch.load(ligand_graph_path)
+        # Create dummy target (will not be used for inference)
+        dummy_target = torch.zeros(8, dtype=torch.float32)  # Adjust size as needed
+        graph_data.y = dummy_target
+        graph_data.names = name
+        return graph_data
+    
+# Protein graph for inference
+class InferenceProteinDataset(Dataset):
+    def __init__(self, names_list, protein_graph_dir):
+        self.names_list = names_list
+        self.protein_graph_dir = protein_graph_dir
+                    
+    def __len__(self):
+        return len(self.names_list)
+    
+    def __getitem__(self, idx):
+        name = self.names_list[idx]
+        
+        # Load protein graph
+        protein_graph_path = f'{self.protein_graph_dir}/pyg_graph_{name}.pt'
+        if not os.path.exists(protein_graph_path):
+            raise FileNotFoundError(f"Protein graph file not found: {protein_graph_path}")
+            
+        # Load the graph data directly (inference files are stored as PyG Data objects)
+        graph_data = torch.load(protein_graph_path)
+        # Create dummy target (will not be used for inference)
+        dummy_target = torch.zeros(8, dtype=torch.float32)  # Adjust size as needed
+        graph_data.y = dummy_target
+        graph_data.names = name
+        return graph_data
+    
+# Create Combined Inference Dataset
+class CombinedInferenceDataset(Dataset):
+    def __init__(self, names_list, ligand_graph_dir, protein_graph_dir):
+        self.ligand_dataset = InferenceLigandDataset(names_list, ligand_graph_dir)
+        self.protein_dataset = InferenceProteinDataset(names_list, protein_graph_dir)
+
+    def __len__(self):
+        return len(self.ligand_dataset)
+
+    def __getitem__(self, idx):
+        # Get data from both datasets
+        ligand_data = self.ligand_dataset[idx]
+        protein_data = self.protein_dataset[idx]
+        
+        # Names should match
+        assert ligand_data.names == protein_data.names, "names do not match."
+        
+        return ligand_data, protein_data
 
 # Prepare dataset for the binary (go or no-go) algorithm selection task  
 def prepare_data_binary(drop_columns:list = []):
